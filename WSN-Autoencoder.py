@@ -494,11 +494,15 @@ class LIIDS:
     
     def save_model(self, path="liids_model"):
         """Save the trained model"""
+        if not path.endswith('.keras') and not path.endswith('.h5'):
+            path = path + '.keras'  # Add .keras extension if not present
         self.model.save(path)
         print(f"Model saved to {path}")
     
     def load_model(self, path="liids_model"):
         """Load a trained model"""
+        if not path.endswith('.keras') and not path.endswith('.h5'):
+            path = path + '.keras'  # Add .keras extension if not present
         self.model = tf.keras.models.load_model(path)
         print(f"Model loaded from {path}")
 
@@ -636,48 +640,55 @@ class DataProcessor:
                 with open(test_path, 'wb') as f:
                     f.write(response.content)
         
-        # Load data
+        # Load data with error handling for various CSV formats
         try:
-            train_data = pd.read_csv(train_path)
-            test_data = pd.read_csv(test_path)
+            train_data = pd.read_csv(train_path, error_bad_lines=False, warn_bad_lines=True, 
+                                     on_bad_lines='skip', low_memory=False)
+            test_data = pd.read_csv(test_path, error_bad_lines=False, warn_bad_lines=True, 
+                                   on_bad_lines='skip', low_memory=False)
+            
+            # Check if data loaded successfully
+            if train_data.shape[0] < 10 or test_data.shape[0] < 10:
+                raise ValueError("Not enough records loaded from the dataset files")
+                
+            # Display dataset information
+            print(f"UNSW-NB15 Training set shape: {train_data.shape}")
+            print(f"UNSW-NB15 Test set shape: {test_data.shape}")
+            
+            # Combine train and test for preprocessing
+            data = pd.concat([train_data, test_data], axis=0)
+            
+            # Drop irrelevant columns
+            if 'id' in data.columns:
+                data = data.drop(['id'], axis=1)
+            if 'attack_cat' in data.columns:
+                data = data.drop(['attack_cat'], axis=1)
+            
+            # One-hot encode categorical features
+            categorical_cols = [col for col in ['proto', 'service', 'state'] if col in data.columns]
+            data = pd.get_dummies(data, columns=categorical_cols, drop_first=False)
+            
+            # Extract features and labels (binary classification)
+            X = data.drop('label', axis=1)
+            y = data['label'].values
+            
+            # Split back into train and test (maintain original split)
+            train_size = train_data.shape[0]
+            X_train = X.iloc[:train_size]
+            y_train = y[:train_size]
+            X_test = X.iloc[train_size:]
+            y_test = y[train_size:]
+            
+            print(f"Features shape after preprocessing: {X.shape}")
+            print(f"Number of normal samples: {(y == 0).sum()}")
+            print(f"Number of attack samples: {(y == 1).sum()}")
+            
+            return X_train, y_train, X_test, y_test, X.columns
+            
         except Exception as e:
             print(f"Error loading UNSW-NB15 dataset: {e}")
             print("Using synthetic UNSW-NB15-like dataset instead...")
             return DataProcessor.generate_synthetic_unsw_nb15()
-        
-        # Display dataset information
-        print(f"UNSW-NB15 Training set shape: {train_data.shape}")
-        print(f"UNSW-NB15 Test set shape: {test_data.shape}")
-        
-        # Combine train and test for preprocessing
-        data = pd.concat([train_data, test_data], axis=0)
-        
-        # Drop irrelevant columns
-        if 'id' in data.columns:
-            data = data.drop(['id'], axis=1)
-        if 'attack_cat' in data.columns:
-            data = data.drop(['attack_cat'], axis=1)
-        
-        # One-hot encode categorical features
-        categorical_cols = ['proto', 'service', 'state']
-        data = pd.get_dummies(data, columns=categorical_cols, drop_first=False)
-        
-        # Extract features and labels (binary classification)
-        X = data.drop('label', axis=1)
-        y = data['label'].values
-        
-        # Split back into train and test (maintain original split)
-        train_size = train_data.shape[0]
-        X_train = X.iloc[:train_size]
-        y_train = y[:train_size]
-        X_test = X.iloc[train_size:]
-        y_test = y[train_size:]
-        
-        print(f"Features shape after preprocessing: {X.shape}")
-        print(f"Number of normal samples: {(y == 0).sum()}")
-        print(f"Number of attack samples: {(y == 1).sum()}")
-        
-        return X_train, y_train, X_test, y_test, X.columns
     
     @staticmethod
     def generate_synthetic_nsl_kdd(n_samples=10000, n_features=41, attack_ratio=0.2, seed=42):
@@ -750,8 +761,8 @@ class DataProcessor:
         print("\nGenerating synthetic UNSW-NB15-like dataset...")
         np.random.seed(seed)
         
-        # Generate feature names (similar to UNSW-NB15)
-        feature_names = [
+        # Generate feature names - make sure we have exactly n_features names
+        base_feature_names = [
             # Basic features
             'dur', 'proto', 'service', 'state', 'spkts', 'dpkts', 'sbytes', 'dbytes',
             # Content features
@@ -762,11 +773,19 @@ class DataProcessor:
             'ct_dst_ltm', 'ct_src_dport_ltm', 'ct_dst_sport_ltm', 'ct_dst_src_ltm',
             # Additional features
             'is_ftp_login', 'ct_ftp_cmd', 'ct_flw_http_mthd', 'ct_src_ltm', 'ct_srv_dst',
-            'is_sm_ips_ports', 'attack_cat', 'label'
+            'is_sm_ips_ports', 'attack_cat'
         ]
         
-        # Keep only n_features columns
-        feature_names = feature_names[:n_features]
+        # Ensure we have exactly n_features feature names
+        if len(base_feature_names) < n_features:
+            # Add generic feature names if we need more
+            additional_names = [f'feature_{i}' for i in range(n_features - len(base_feature_names))]
+            feature_names = base_feature_names + additional_names
+        elif len(base_feature_names) > n_features:
+            # Truncate if we have too many
+            feature_names = base_feature_names[:n_features]
+        else:
+            feature_names = base_feature_names
         
         # Generate normal samples
         n_normal = int(n_samples * (1 - attack_ratio))
@@ -780,7 +799,7 @@ class DataProcessor:
         X = np.vstack([normal_data, attack_data])
         y = np.hstack([np.zeros(n_normal), np.ones(n_attack)])
         
-        # Create DataFrame
+        # Create DataFrame with exact column count match
         X_df = pd.DataFrame(X, columns=feature_names)
         
         # Split into train and test sets
@@ -795,7 +814,7 @@ class DataProcessor:
         print(f"Test set shape: {X_test.shape}")
         
         # Save synthetic dataset
-        synthetic_data = pd.DataFrame(X)
+        synthetic_data = pd.DataFrame(X, columns=feature_names)
         synthetic_data['label'] = y
         synthetic_data.to_csv('synthetic_unsw_nb15.csv', index=False)
         print("Synthetic UNSW-NB15 dataset saved to 'synthetic_unsw_nb15.csv'")
