@@ -8,8 +8,7 @@ Department of Electronics and Telecommunications Engineering
 Ahmadu Bello University, Zaria
 
 Supervised by: 
-Prof. A. D. Usman 	Chairman
-Dr. A. S. Yaro	 	Member
+Prof. A. D. Usman, and Dr. A. S. Yaro
 
 This implementation includes:
 1. Data preprocessing for NSL-KDD and UNSW-NB15 datasets
